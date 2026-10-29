@@ -1,0 +1,11 @@
+source_dir: source_data
+bronze_dir: data/raw
+log_file: logs/ingestion.log
+
+sources:
+  goa_holidays:
+    file: goa_holidays_2022_2023.csv
+  goa_weather:
+    file: goa_weather_2022_2023.csv
+  places:
+    file: Top_Indian_Places_to_Visit.csv
