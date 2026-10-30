@@ -9,3 +9,4 @@ sources:
     file: goa_weather_2022_2023.csv
   places:
     file: Top_Indian_Places_to_Visit.csv
+silver_dir: data/silver
