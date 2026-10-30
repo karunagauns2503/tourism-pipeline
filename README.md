@@ -166,3 +166,96 @@ The raw data is stored unchanged. These issues were found while profiling the fi
 - The scope is Goa, January 2022 to December 2023.
 - The data does not include visitor counts or hotel data, so questions about peak months or domestic versus international trends cannot be answered directly from it. The Google review count in the places data can be used as a popularity proxy.
 - The places data has one row per place and is not time-based, so it relates to the weather and holiday data by location rather than by date.
+
+
+## Orchestration and Dashboards
+
+**Role in the project:** Orchestration (Airflow) and dashboards
+
+### Airflow Orchestration
+
+The project pipeline is orchestrated using Apache Airflow. The DAG automates the execution of the complete data pipeline from ingestion to quality checks.
+
+The Airflow DAG is located at:
+
+`dags/tourism_pipeline_dag.py`
+
+The pipeline contains the following tasks:
+
+1. `ingest_csv` – ingests the tourism CSV datasets into the raw layer.
+2. `ingest_weather_api` – ingests weather data from the Open-Meteo API.
+3. `clean_holidays` – cleans the holiday data.
+4. `clean_weather` – cleans the weather data.
+5. `clean_places` – cleans the tourist places data.
+6. `load_gold` – loads the transformed data into the Gold layer and warehouse tables.
+7. `quality_checks` – validates the generated warehouse data.
+
+The task flow is:
+
+```text
+ingest_csv
+     |
+ingest_weather_api
+     |
+     +------------------+
+     |        |         |
+     v        v         v
+clean_    clean_    clean_
+holidays  weather   places
+     |        |         |
+     +--------+---------+
+              |
+              v
+          load_gold
+              |
+              v
+       quality_checks
+
+
+### Dashboards
+
+Three dashboards were developed using Python, Pandas, Matplotlib and Seaborn.
+
+#### 1. Overview Dashboard
+
+Provides an overall summary of the tourism data, including:
+
+- Number of tourist places
+- Average tourist-place rating
+- Average maximum temperature
+- Total rainfall
+- Top-rated tourist places
+- Indoor versus outdoor tourist places
+
+#### 2. Weather Analysis Dashboard
+
+Provides weather-based tourism analysis, including:
+
+- Monthly rainfall
+- Monthly average maximum temperature
+- Rainy days by month
+- Season-wise rainfall
+- Season-wise temperature
+- Heavy rainfall days
+
+#### 3. Tourist Places Analysis Dashboard
+
+Provides analysis of tourist places based on:
+
+- Ratings
+- Number of Google reviews
+- Entrance fees
+- Indoor versus outdoor places
+
+The dashboards are stored in the `dashboard/` directory.
+
+### Dashboard Files
+
+```text
+dashboard/
+├── dashboard.py
+├── overview_dashboard.png
+├── tourist_places_dashboard.png
+├── tourist_places_dashboard.py
+├── weather_dashboard.png
+└── weather_dashboard.py
