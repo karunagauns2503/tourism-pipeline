@@ -1,318 +1,167 @@
-# Goa Tourism Analytics Pipeline: Data Collection & Ingestion (Bronze Layer)
+# Transformation (Silver layer)
 
-This README documents the **data collection and ingestion** stage of the team project *End-to-End Data Engineering Pipeline for Tourism Analytics*. It explains what was built, how to run it, what the raw data looks like, and what the next stage (cleaning) should watch out for.
+This is the second stage of our Goa tourism pipeline. Karuna's ingestion scripts drop raw files into the Bronze layer. The scripts in this folder read those files, clean them, and write tidy tables to the Silver layer. Janhavi builds the warehouse from these tables.
 
----
+Bronze stays untouched. Everything here reads from `data/raw/` and writes to `data/silver/`.
 
-## 1. What this stage does
+## What goes in and what comes out
 
-The goal of ingestion is to get raw data from every source into the **Bronze layer** (the raw data lake) **reliably, repeatably and untouched**.
-
-> **Rule of this layer: no cleaning.** Bad rows, typos, nulls and odd values are kept exactly as received. Cleaning happens in the Silver layer (Saini's part). This way the original data is always available for reprocessing.
-
-```
-Sources                    Ingestion scripts                 Bronze (data lake)
------------------------    ------------------------------    -----------------------------------
-3 CSV files           -->  ingestion/ingest_csv.py       -->  data/raw/<source>/ingestion_date=YYYY-MM-DD/
-Open-Meteo weather API -->  ingestion/ingest_weather_api.py -->  data/raw/weather_api/ingestion_date=YYYY-MM-DD/
-```
-
----
-
-## 2. Project scope
-
-- **Region:** Goa (weather and holidays are Goa-only). The places dataset covers all of India and includes 14 Goa places.
-- **Time range:** 1 Jan 2022 to 31 Dec 2023.
-- **Storage:** local folder that mimics a data lake. The layout can be moved to S3 / Azure Blob later without changes to the folder structure.
-
----
-
-## 3. Repository structure
-
-```
-tourism-pipeline/
-├── config/
-│   └── config.yaml              # source folder, bronze folder, log file, list of CSV sources
-├── ingestion/
-│   ├── ingest_csv.py            # copies the 3 CSVs into Bronze + writes metadata
-│   └── ingest_weather_api.py    # pulls Goa daily weather from Open-Meteo into Bronze
-├── source_data/                 # the original CSV files (starting point)
-│   ├── goa_holidays_2022_2023.csv
-│   ├── goa_weather_2022_2023.csv
-│   └── Top_Indian_Places_to_Visit.csv
-├── data/raw/                    # BRONZE layer (generated; not in Git)
-├── logs/                        # ingestion.log (generated; not in Git)
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
-
-`data/`, `logs/`, `venv/` and `.env` are listed in `.gitignore`, so they are not uploaded to GitHub. Anyone can regenerate `data/` by running the ingestion scripts.
-
----
-
-## 4. Step-by-step: what was done
-
-### Step 1: Created the project folder
-Created `tourism-pipeline` inside the user's Documents folder (**not** in `C:\Windows\System32`, which is protected and gives "Access denied") with subfolders `ingestion`, `config`, `logs`, `source_data` and `data\raw`.
-
-### Step 2: Placed the source CSVs in `source_data/`
-Copied the three provided datasets into `source_data/`. The places file arrived as `Top Indian Places to Visit.csv` (with spaces) and was renamed to `Top_Indian_Places_to_Visit.csv` so the file name matches the config.
-
-### Step 3: Set up the Python environment
-```powershell
-python -m venv venv
-venv\Scripts\activate
-pip install pyyaml pandas requests
-pip freeze > requirements.txt
-```
-A virtual environment keeps this project's packages separate from the rest of the machine. `requirements.txt` lets teammates install the same packages.
-
-### Step 4: Wrote the config file (`config/config.yaml`)
-All paths and file names live in one config file instead of being hardcoded in the script. Adding a new CSV source later only needs a new entry under `sources:`.
-
-```yaml
-source_dir: source_data
-bronze_dir: data/raw
-log_file: logs/ingestion.log
-
-sources:
-  goa_holidays:
-    file: goa_holidays_2022_2023.csv
-  goa_weather:
-    file: goa_weather_2022_2023.csv
-  places:
-    file: Top_Indian_Places_to_Visit.csv
-```
-
-### Step 5: Wrote the CSV ingestion script (`ingestion/ingest_csv.py`)
-For each source listed in the config, the script:
-
-1. Checks the source file exists (fails with a clear error if not).
-2. Creates the Bronze folder `data/raw/<source>/ingestion_date=<run date>/`.
-3. **Copies the file as-is** (the file is not re-saved through pandas, so the raw layer stays truly raw).
-4. Reads the copy only to count rows and columns for the log.
-5. Writes a `_metadata.json` next to the file (see section 6).
-6. Logs the result to the console and to `logs/ingestion.log`.
-
-Design points:
-- **Idempotent:** running it twice on the same day overwrites the same folder, so no duplicates are created.
-- **Airflow-ready:** the logic is in `main(run_date=None)`, so Disha can call it from an Airflow task and pass a run date. Nothing is hardcoded.
-- **Fails loudly:** if any source fails, the error is logged with a traceback and the script stops.
-
-### Step 6: Ran the CSV ingestion and verified it
-```powershell
-python ingestion\ingest_csv.py
-```
-Result:
-
-| Source | Rows | Columns |
+| Bronze source | Silver file | Rows |
 |---|---|---|
-| goa_holidays | 45 | 4 |
-| goa_weather | 730 | 3 |
-| places | 325 | 16 |
+| places (CSV) | `places_clean.parquet` | 325 |
+| places (CSV) | `places_goa.parquet` (Goa only) | 14 |
+| goa_weather (CSV) + weather_api (JSON) | `fact_weather_daily.parquet` | 730 |
+| goa_holidays (CSV) | `holidays_clean.parquet` | 45 |
+| goa_holidays (CSV) | `dim_date.parquet` | 730 |
 
-Verified with `tree data /F` that each source has its own folder containing the CSV and `_metadata.json`.
+## How to run it
 
-### Step 7: Wrote and ran the weather API script (`ingestion/ingest_weather_api.py`)
-Pulls daily historical weather for Goa from the free **Open-Meteo archive API** (no API key needed).
+Run the ingestion scripts first, because `data/` is not on GitHub.
 
-- **Endpoint:** `https://archive-api.open-meteo.com/v1/archive`
-- **Location:** latitude 15.4909, longitude 73.8278 (Goa)
-- **Date range:** 2022-01-01 to 2023-12-31
-- **Daily fields:** `temperature_2m_max`, `temperature_2m_min`, `precipitation_sum`
-- **Timezone:** `Asia/Kolkata`
-- **Reliability:** 30-second timeout and up to 3 retries with increasing wait time.
-
-Result: 730 days of data saved to `data/raw/weather_api/ingestion_date=<date>/goa_weather_api.json` (about 23 KB).
-
-This gives the project its **API source** and also provides a second weather source to cross-check the weather CSV against.
-
-### Step 8: Pushed the code to GitHub
-Initialised a Git repo in the project folder, committed the scripts, config, `requirements.txt` and the three CSVs, and pushed to the `main` branch. Raw/generated folders are excluded by `.gitignore`.
-
----
-
-## 5. How to run everything from scratch
-
-**Prerequisites:** Python 3.9+ and Git.
-
-```powershell
-# 1. Get the code
+```bash
 git clone https://github.com/karunagauns2503/tourism-pipeline.git
 cd tourism-pipeline
+git checkout transformation
 
-# 2. Create and activate a virtual environment
 python -m venv venv
-venv\Scripts\activate
-
-# 3. Install packages
+source venv/Scripts/activate      # Git Bash. In PowerShell: venv\Scripts\activate
 pip install -r requirements.txt
+pip install pyarrow
 
-# 4. Run ingestion (creates data/raw/ and logs/)
-python ingestion\ingest_csv.py
-python ingestion\ingest_weather_api.py
+python ingestion/ingest_csv.py
+python ingestion/ingest_weather_api.py
+
+python transformation/clean_places.py
+python transformation/clean_weather.py
+python transformation/clean_holidays.py
+python transformation/check_silver.py
 ```
 
-Expected output: `OK` lines for goa_holidays (45 rows), goa_weather (730 rows), places (325 rows) and weather_api (730 days).
+`check_silver.py` should print `OK` for all five files. Every script writes to `logs/transformation.log`. Each one reads the newest `ingestion_date` folder in Bronze, and the Silver folder comes from `silver_dir` in `config/config.yaml`.
 
-To use a specific partition date: `python ingestion\ingest_csv.py --run-date 2026-10-29`
+## What each script does
 
-> Open PowerShell **normally** (not as Administrator) or from inside the project folder; otherwise it starts in `C:\Windows\System32`.
+### clean_places.py
 
----
+- Drops the leftover `Unnamed: 0` column.
+- Renames every column to snake_case (`Google review rating` becomes `google_review_rating`).
+- Trims extra spaces in the text columns.
+- Fixes the spelling `Maharastra` to `Maharashtra`. This brought the state count from 33 down to 32.
+- Fixes `Santuary` to `Sanctuary` in place names.
+- Turns `establishment_year` into a number and keeps the original text in `establishment_year_raw`. Details below.
+- Fills the empty `weekly_off` values with `Not specified`.
+- Adds an `is_goa` flag and saves the 14 Goa places as a separate file.
+- Removes duplicate rows. There were none, so 325 rows in and 325 out.
 
-## 6. Bronze layer layout
+**Establishment year rules**
 
-```
-data/raw/
-├── goa_holidays/ingestion_date=YYYY-MM-DD/
-│   ├── goa_holidays_2022_2023.csv
-│   └── _metadata.json
-├── goa_weather/ingestion_date=YYYY-MM-DD/
-│   ├── goa_weather_2022_2023.csv
-│   └── _metadata.json
-├── places/ingestion_date=YYYY-MM-DD/
-│   ├── Top_Indian_Places_to_Visit.csv
-│   └── _metadata.json
-└── weather_api/ingestion_date=YYYY-MM-DD/
-    └── goa_weather_api.json
-```
+- Plain numbers become years, so `1572` is 1572.
+- Negative numbers are BCE years, so `-400` means 400 BCE.
+- `1960s` becomes 1960.
+- These stay empty because they don't hold a single year: `Unknown`, `Ancient`, and the centuries (`6th century AD`, `7th century`, `10th century`, `11th century`, `12th century`, `14th century`, `16th century`).
 
-Each folder is **partitioned by ingestion date**, the standard Bronze convention. `_metadata.json` contains:
+### clean_weather.py
 
-| Field | Meaning |
-|---|---|
-| `source` | source name from the config |
-| `file` | original file name |
-| `rows` | number of data rows |
-| `columns` | list of column names |
-| `md5` | checksum of the file, to detect changes or corruption |
-| `ingested_at` | timestamp of ingestion |
-| `bronze_path` | where the file was stored |
+- Converts dates to a real date type and checks there is one row per day.
+- Flags bad values (negative rain, max temperature under 10 or over 50). Those rows would go to `weather_rejects.csv` and not get deleted.
+- Flattens the API JSON into one row per day.
+- Joins the CSV and the API on date. Columns are prefixed `csv_` and `api_` so you can tell them apart.
+- Logs how far apart the two sources are. The CSV has no minimum temperature, the API does.
 
----
+The log says the average difference in max temperature is [fill in] C and in rainfall [fill in] mm per day.
 
-## 7. Data dictionary (raw data)
+### clean_holidays.py
 
-### 7.1 `goa_holidays_2022_2023.csv`: 45 rows, 4 columns
-Public holidays in Goa. Covers 2022-01-26 to 2023-12-25, 25 distinct holiday names.
+- Converts dates and removes duplicates.
+- Builds `dim_date`, one row for every day from 2022-01-01 to 2023-12-31.
 
-| Column | Type | Description |
-|---|---|---|
-| `date` | text (YYYY-MM-DD) | Date of the holiday |
-| `holiday_name` | text | Name of the holiday |
-| `state` | text | State (Goa) |
-| `country` | text | Country (India) |
+`dim_date` columns: `date`, `year`, `quarter`, `month`, `month_name`, `day`, `weekday`, `is_weekend`, `season`, `holiday_name`, `is_holiday`.
 
-Quality: no nulls, no duplicates.
+Seasons are Winter (Dec to Feb), Summer (Mar to May), Monsoon (Jun to Sep) and Post-monsoon (Oct to Nov). If two holidays fall on the same date, the names are joined with a semicolon. There are 45 holiday days in total.
 
-### 7.2 `goa_weather_2022_2023.csv`: 730 rows, 3 columns
-One row per day, 2022-01-01 to 2023-12-31.
+## Silver tables
 
-| Column | Type | Description |
-|---|---|---|
-| `date` | text (YYYY-MM-DD) | Date |
-| `max_temp_c` | decimal | Daily maximum temperature in °C (range about 24.6 to 38.1) |
-| `rainfall_mm` | decimal | Daily rainfall in mm (max about 102) |
+### places_clean and places_goa (17 columns)
 
-Quality: no nulls, no duplicates. The two years have exactly 730 days, so there are no missing dates.
+Both files have the same columns. `places_goa` only keeps the rows where `is_goa` is true.
 
-### 7.3 `Top_Indian_Places_to_Visit.csv`: 325 rows, 16 columns
-Tourist places across India (14 of them in Goa), with Google review data. Coverage is by zone: Southern 98, Northern 89, Eastern 45, Western 40, Central 39, North Eastern 14.
-
-| Column | Type | Description |
-|---|---|---|
-| `Unnamed: 0` | integer | Leftover index column from a previous export |
-| `Zone` | text | Region of India (Northern, Southern, etc.) |
-| `State` | text | State |
-| `City` | text | City |
-| `Name` | text | Name of the place |
-| `Type` | text | Category (War Memorial, Temple, Theme Park, etc.) |
-| `Establishment Year` | **text** | Year built; mixed formats (see issues) |
-| `time needed to visit in hrs` | decimal | Typical visit duration in hours |
-| `Google review rating` | decimal | Rating on Google |
-| `Entrance Fee in INR` | integer | Entry fee in rupees (0 = free) |
-| `Airport with 50km Radius` | text | Yes/No: airport within 50 km |
-| `Weekly Off` | text | Day the place is closed |
-| `Significance` | text | Historical, Religious, Environmental, etc. |
-| `DSLR Allowed` | text | Yes/No |
-| `Number of google review in lakhs` | decimal | Review count in lakhs (1 lakh = 100,000) |
-| `Best Time to visit` | text | Morning / Afternoon / Evening |
-
-The 14 Goa places: Calangute Beach, Basilica of Bom Jesus, Fort Aguada, Dudhsagar Falls, Anjuna Beach, Chapora Fort, Se Cathedral, Baga Beach, Arambol Beach, Palolem Beach, Colva Beach, Miramar Beach, Aguada Beach, Dr. Salim Ali Bird Santuary.
-
-### 7.4 `goa_weather_api.json`: Open-Meteo API response
-JSON with a `daily` object holding parallel arrays of 730 values: `time`, `temperature_2m_max`, `temperature_2m_min`, `precipitation_sum`. It is stored exactly as the API returned it.
-
----
-
-## 8. Known data issues (for Saini: found, but NOT fixed in Bronze)
-
-These were found while profiling the raw files. They are intentionally left untouched in Bronze and should be handled in the Silver (cleaning) layer.
-
-| # | File | Issue | Suggested handling |
+| Column | Type | Description | Changed from Bronze |
 |---|---|---|---|
-| 1 | places | `Establishment Year` is text with values like `Unknown`, `Ancient`, `12th century`, `6th century AD`, `1960s` mixed with plain years | Convert to a numeric year where possible; keep a separate flag/column for approximate or unknown values |
-| 2 | places | `Weekly Off` is empty in 293 of 325 rows. Values: Monday 23, Friday 5, Sunday 2, Tuesday 1, and `Yes` 1 | Decide whether empty means "open every day"; treat `Yes` as unclear and flag it |
-| 3 | places | State spelled `Maharastra` (missing an "h") | Standardise to `Maharashtra` |
-| 4 | places | `Unnamed: 0` is a leftover index column | Drop it |
-| 5 | places | Typo in a name: `Dr. Salim Ali Bird Santuary` | Correct to `Sanctuary` |
-| 6 | places | Column names have spaces and mixed case | Rename to snake_case, e.g. `google_review_rating` |
-| 7 | places | `Number of google review in lakhs` is in lakhs | Convert to a plain count if needed (× 100,000) |
-| 8 | all | Dates are plain text | Convert to a proper date type |
-| 9 | weather CSV vs API | Two weather sources with different fields and slightly different values | Pick one as the main source, or compare them as a validation check |
+| `zone` | text | Region of India (Northern, Southern, etc.) | Renamed, spaces trimmed |
+| `state` | text | State | `Maharastra` fixed to `Maharashtra` |
+| `city` | text | City | Spaces trimmed |
+| `name` | text | Name of the place | `Santuary` fixed to `Sanctuary` |
+| `type` | text | Category (Temple, Beach, Fort, etc.) | Spaces trimmed |
+| `establishment_year` | integer, can be empty | Year built. Negative means BCE | Was text, now numeric |
+| `time_needed_to_visit_in_hrs` | decimal | Usual visit time in hours | Renamed only |
+| `google_review_rating` | decimal | Google rating | Renamed only |
+| `entrance_fee_in_inr` | integer | Entry fee in rupees, 0 means free | Renamed only |
+| `airport_with_50km_radius` | text | Yes or No, airport within 50 km | Renamed only |
+| `weekly_off` | text | Day the place is closed | Empty values became `Not specified` |
+| `significance` | text | Historical, Religious, Environmental, etc. | Renamed only |
+| `dslr_allowed` | text | Yes or No | Renamed only |
+| `number_of_google_review_in_lakhs` | decimal | Review count in lakhs (1 lakh = 100,000) | Renamed only |
+| `best_time_to_visit` | text | Morning, Afternoon or Evening | Renamed only |
+| `establishment_year_raw` | text | The original year text, kept as received | New column |
+| `is_goa` | true/false | True when the state is Goa | New column |
 
-Also worth checking in Silver: duplicates and category spelling variations in `Type`, `Significance` and `State`.
+The Bronze column `Unnamed: 0` is dropped, so 16 columns become 15, plus the two new ones.
 
----
+### fact_weather_daily (6 columns)
 
-## 9. Hand-off notes for Saini (Silver layer)
+One row per day.
 
-**Where to read from:** `data/raw/<source>/ingestion_date=<date>/` after running the two ingestion scripts. Use the latest `ingestion_date` folder.
-
-**Join keys available:**
-- `date` joins weather and holidays (and any future visitor data).
-- `State` / `City` joins places to the Goa data. In the places file, Goa places have `City = Goa`.
-
-**Important limitations of the current data:**
-- **There is no visitor-count data** and **no hotel data** yet. Without visitor counts, questions about peak season and "do higher-rated places attract more tourists?" cannot be answered directly. `Number of google review in lakhs` can serve as a popularity proxy until a visitor-arrivals dataset is found.
-- The places data is **not time-based** (one row per place), so it joins to weather and holidays by Goa location, not by date.
-
----
-
-## 10. Troubleshooting (problems hit while building this)
-
-| Problem | Cause | Fix |
+| Column | Type | Description |
 |---|---|---|
-| `mkdir : Access to the path is denied` | PowerShell opened in `C:\Windows\System32` | `cd $HOME\Documents` first, and open PowerShell normally (not as Administrator) |
-| `source_dir: : The term ... is not recognized` | YAML text was pasted into the terminal | Create the file with `notepad config\config.yaml` and paste the content there |
-| `FileNotFoundError: Source file missing` | CSV name did not match the config (spaces vs underscores) | Rename the file to match the config exactly |
-| `git add .` failed with `tourism-pipeline/ does not have a commit checked out` | `git clone` created a nested empty repo inside the project | Delete the nested folder, then use `git init` |
-| `src refspec main does not match any` | No commit existed yet | Set `git config user.name/user.email`, commit, then push |
+| `date` | date | Day. Joins to `dim_date` |
+| `csv_max_temp_c` | decimal | Max temperature in C, from the weather CSV |
+| `csv_rainfall_mm` | decimal | Rainfall in mm, from the weather CSV |
+| `api_max_temp_c` | decimal | Max temperature in C, from Open-Meteo |
+| `api_min_temp_c` | decimal | Min temperature in C, from Open-Meteo |
+| `api_rainfall_mm` | decimal | Rainfall in mm, from Open-Meteo |
 
-**Git rule of thumb:** `git init` for a project that exists only on your computer; `git clone` for copying an existing GitHub repo.
+### holidays_clean (4 columns)
 
----
+| Column | Type | Description |
+|---|---|---|
+| `date` | date | Date of the holiday |
+| `holiday_name` | text | Name of the holiday. Some rows hold two names separated by a semicolon |
+| `state` | text | Goa |
+| `country` | text | India |
 
-## 11. Team workflow
+### dim_date (11 columns)
 
-- Each teammate clones the repo once: `git clone https://github.com/karunagauns2503/tourism-pipeline.git`
-- Each person adds their own folder: `transformation/` (Saini), `warehouse/` (Janhavi), `dags/` (Disha).
-- Run `git pull` before starting work and before pushing, to avoid conflicts.
-- Never commit API keys. Keep them in a `.env` file, which is already git-ignored. (Open-Meteo needs no key.)
+One row for every day from 2022-01-01 to 2023-12-31.
 
----
+| Column | Type | Description |
+|---|---|---|
+| `date` | date | Day. Primary key |
+| `year` | integer | 2022 or 2023 |
+| `quarter` | integer | 1 to 4 |
+| `month` | integer | 1 to 12 |
+| `month_name` | text | January, February, etc. |
+| `day` | integer | Day of the month |
+| `weekday` | text | Monday to Sunday |
+| `is_weekend` | true/false | True for Saturday and Sunday |
+| `season` | text | Winter, Summer, Monsoon or Post-monsoon |
+| `holiday_name` | text | Holiday on that day, empty if none |
+| `is_holiday` | true/false | True when there is a holiday |
 
-## 12. Status and next steps
+## Things to know
 
-| Item | Status |
-|---|---|
-| CSV ingestion (3 sources) | Done |
-| Weather API ingestion | Done |
-| Bronze layer with metadata and logging | Done |
-| Code on GitHub | Done |
-| Web-scraping source (third source type in the project plan) | **To do** |
-| Goa visitor-arrivals dataset | **To find** (needed to answer the core business questions) |
-| Hotel data (optional) | To find |
-| Airflow wrapper around `main(run_date)` | Disha |
+- `date` is the join key between the weather table, the holidays and `dim_date`.
+- The places table has no date. It only connects to the rest through the state, so Goa places are the ones where `is_goa` is true.
+- `weekly_off` still contains one odd value, `Yes`. I left it as it was.
+- Some places have no usable year, so `establishment_year` has nulls. Use `establishment_year_raw` if you need the original text.
+- There is still no visitor or hotel data. Until we find some, `number_of_google_review_in_lakhs` is the closest thing to a popularity measure.
+- `data/` and `logs/` are in `.gitignore`. Run the scripts to regenerate everything.
+
+## Folder
+
+```
+transformation/
+├── clean_places.py
+├── clean_weather.py
+├── clean_holidays.py
+└── check_silver.py
+```
