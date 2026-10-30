@@ -1,6 +1,7 @@
 # Goa Tourism Analytics Pipeline: Data Collection and Ingestion
 
 **Contributor:** Karuna
+
 **Role in the project:** Data collection and ingestion (Bronze layer)
 
 This is part of the team project *End-to-End Data Engineering Pipeline for Tourism Analytics*. This README covers only the data collection and ingestion stage, which brings raw tourism data into the Bronze (raw) layer of the data lake exactly as received, with no cleaning. Later stages of the pipeline (cleaning, transformation, warehouse, orchestration and dashboards) are handled by other team members.
